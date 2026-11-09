@@ -78,7 +78,8 @@
 <script>
 const KEY = 'presaleslab_sender_v1';
 let state = { members: [], greet: '', body: '', only1: true };
-let idx = 0;
+let copied = null;      // 지금 화면의 회원이 이미 복사되었는지
+let lastDone = null;    // 되돌리기용
 
 const $ = id => document.getElementById(id);
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
@@ -154,24 +155,56 @@ function render() {
       <div class="row"><label>호칭 <input type="text" id="call" value="${esc(m.call)}" style="width:200px"></label></div>
       <div class="preview" id="prev"></div>
       <div class="row">
-        <button id="copy" class="primary">① 메시지 복사</button>
-        <button id="open">② 링크드인 메시지 열기</button>
-        <button id="done" class="ok">③ 발송 완료, 다음</button>
-        <button id="skip">건너뛰기</button>
+        <button id="copy" class="primary">메시지 복사</button>
+        <button id="open">링크드인 메시지 열기</button>
+        <button id="done" class="ok">발송 완료, 다음 (Enter)</button>
+        <button id="skip">건너뛰기 (S)</button>
       </div>
-      <p class="mute">링크드인 메시지에서 이 회원의 대화창을 열고 붙여넣기(Ctrl/⌘+V) 후 전송하세요. 남은 인원: ${q.length}명</p>`;
+      <p class="mute"><b>단축키</b> Enter = 첫 회원은 복사 / 이후는 “앞 사람 발송 완료 + 다음 사람 메시지 자동 복사”, S = 건너뛰기, Z = 직전 되돌리기.<br>
+        흐름: Enter(복사) → 링크드인에서 붙여넣고 전송 → 이 창으로 돌아와 Enter → 붙여넣고 전송 → … 남은 인원: ${q.length}명</p>`;
     $('prev').textContent = message(m);
     $('call').oninput = e => { m.call = e.target.value; $('prev').textContent = message(m); save(); renderTable(); };
-    $('copy').onclick = async () => {
-      try { await navigator.clipboard.writeText(message(m)); $('copy').textContent = '복사됨 ✓'; }
-      catch (e) { const t = document.createElement('textarea'); t.value = message(m); document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); $('copy').textContent = '복사됨 ✓'; }
-    };
+    if (copied === m) $('copy').textContent = '복사됨 ✓';
+    $('copy').onclick = () => doCopy(m);
     $('open').onclick = () => window.open('https://www.linkedin.com/messaging/', '_blank', 'noopener');
-    $('done').onclick = () => { m.status = 'sent'; save(); render(); };
-    $('skip').onclick = () => { m.status = 'skipped'; save(); render(); };
+    $('done').onclick = () => advance('sent');
+    $('skip').onclick = () => advance('skipped');
   }
   renderTable();
 }
+
+async function doCopy(m) {
+  const text = message(m);
+  try { await navigator.clipboard.writeText(text); }
+  catch (e) { const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
+  copied = m;
+  const b = $('copy'); if (b) b.textContent = '복사됨 ✓';
+}
+
+// 현재 회원을 처리하고 다음 회원 메시지를 바로 복사
+function advance(status) {
+  const m = queue()[0]; if (!m) return;
+  m.status = status; lastDone = m; copied = null; save(); render();
+  const next = queue()[0];
+  if (next && status === 'sent') doCopy(next);
+}
+
+function undoLast() {
+  if (!lastDone) return;
+  lastDone.status = ''; copied = null; lastDone = null; save(); render();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'button') { if (!(tag === 'button' && e.key === 'Enter')) return; }
+  const m = queue()[0]; if (!m) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (copied !== m) doCopy(m); else advance('sent');
+  } else if (e.key === 's' || e.key === 'S' || e.key === 'ㄴ') { advance('skipped'); }
+  else if (e.key === 'z' || e.key === 'Z' || e.key === 'ㅋ') { undoLast(); }
+});
 
 function renderTable() {
   $('tbl').innerHTML = '<tr><th>번호</th><th>이름</th><th>촌수</th><th>호칭</th><th>상태</th></tr>' +
