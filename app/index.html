@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PreSales Lab 공지 발송 도우미</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --mute:#667085; --line:#e2e5ea; --accent:#0a66c2; --ok:#1a7f4b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171c; --card:#1c2027; --ink:#e8ebf0; --mute:#9aa3b2; --line:#2c323c; --accent:#5aa9f0; --ok:#4cc38a; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  main { max-width:820px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:8px 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  textarea, input[type=text] { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); font:inherit; }
+  textarea { min-height:150px; resize:vertical; }
+  button { font:inherit; padding:8px 14px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.ok { background:var(--ok); border-color:var(--ok); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .mute { color:var(--mute); font-size:13px; }
+  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--ok); width:0; }
+  .preview { white-space:pre-wrap; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:12px; margin:10px 0; }
+  .who { font-size:18px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td, th { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); }
+  .tag { font-size:12px; padding:1px 7px; border-radius:10px; border:1px solid var(--line); }
+  .sent { color:var(--ok); } .skipped { color:var(--mute); }
+  details summary { cursor:pointer; font-weight:600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>PreSales Lab 세미나 공지 발송 도우미</h1>
+  <p class="mute">링크드인 약관상 자동 발송은 하지 않습니다. 이 도구는 회원별 메시지를 만들어 <b>복사</b>해 주고 발송 현황을 기억합니다. 전송 버튼은 직접 누릅니다. 회원 정보는 이 브라우저 안에만 저장되고 어디에도 전송되지 않습니다.</p>
+
+  <section class="card">
+    <h2>1. 회원 명단 불러오기</h2>
+    <p class="mute">구글시트 「회원목록」 탭을 전체 선택해 복사한 뒤 아래에 붙여넣거나, CSV 파일을 선택하세요. (컬럼: 번호, 이름, 소개, 촌수, 비고)</p>
+    <textarea id="paste" placeholder="여기에 붙여넣기"></textarea>
+    <div class="row">
+      <button id="load" class="primary">불러오기</button>
+      <input type="file" id="file" accept=".csv,.tsv,.txt">
+      <span id="loadInfo" class="mute"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>2. 공지 본문</h2>
+    <p class="mute">첫 줄은 자동으로 “<b>OOO님, 안녕하세요.</b>”가 붙고, 아래 본문은 모두 동일하게 들어갑니다. <code>{이름}</code>을 본문 어디에든 쓰면 회원명으로 바뀝니다.</p>
+    <input type="text" id="greet" value="{이름}님, 안녕하세요." aria-label="첫 문구">
+    <textarea id="body" placeholder="세미나 일정, 장소, 신청 링크 등 본문"></textarea>
+    <label class="mute"><input type="checkbox" id="only1" checked> 1촌에게만 보내기 (링크드인은 1촌에게만 메시지 가능)</label>
+  </section>
+
+  <section class="card" id="sender" hidden>
+    <h2>3. 발송</h2>
+    <div class="bar"><div id="bar"></div></div>
+    <p class="mute" id="progress"></p>
+    <div id="cur"></div>
+  </section>
+
+  <section class="card" id="listCard" hidden>
+    <details>
+      <summary>전체 명단과 호칭 수정</summary>
+      <p class="mute">“호칭” 칸을 고치면 메시지에 그대로 반영됩니다. (이름이 영문·한글 혼합인 경우 자동으로 추정한 값)</p>
+      <div class="row"><button id="export">발송 현황 CSV 내보내기</button><button id="reset">발송 기록 초기화</button></div>
+      <table id="tbl"></table>
+    </details>
+  </section>
+</main>
+
+<script>
+const KEY = 'presaleslab_sender_v1';
+let state = { members: [], greet: '', body: '', only1: true };
+let idx = 0;
+
+const $ = id => document.getElementById(id);
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
+
+function guessName(raw) {
+  let s = (raw || '').trim();
+  s = s.replace(/^(\([^)]*\)\s*)+/, '');                 // "(효성) Chohyosung" -> "Chohyosung"
+  const hangul = s.match(/[가-힣]{2,}/);                  // 한글 이름이 있으면 한글 우선
+  if (hangul && !/^\(주\)/.test(s)) return hangul[0];
+  s = s.split(' / ')[0];                                  // "JS Park / 박준상"
+  s = s.replace(/\s*\([^)]*\)\s*$/, '');                  // 뒤쪽 괄호 설명 제거
+  return s.trim();
+}
+
+function parseTable(text) {
+  const delim = text.includes('\t') ? '\t' : ',';
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i+1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
+    else if (c === '"' && cell === '') q = true;
+    else if (c === delim) { row.push(cell); cell = ''; }
+    else if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+    else if (c !== '\r') cell += c;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(x => x.trim() !== ''));
+}
+
+function loadMembers(text) {
+  const rows = parseTable(text);
+  if (!rows.length) return 0;
+  const head = rows[0].map(h => h.trim());
+  const col = n => head.indexOf(n);
+  const ci = { no: col('번호'), name: col('이름'), intro: col('소개'), deg: col('촌수'), note: col('비고') };
+  if (ci.name < 0) { $('loadInfo').textContent = '“이름” 컬럼이 있는 첫 줄(헤더)이 필요합니다.'; return 0; }
+  const old = new Map(state.members.map(m => [m.name, m]));    // 재불러오기 시 기존 상태 유지
+  state.members = rows.slice(1).filter(r => (r[ci.name] || '').trim()).map(r => {
+    const name = r[ci.name].trim();
+    const prev = old.get(name);
+    return {
+      no: ci.no >= 0 ? r[ci.no] : '', name, intro: ci.intro >= 0 ? r[ci.intro] : '',
+      deg: ci.deg >= 0 ? (r[ci.deg] || '').trim() : '', note: ci.note >= 0 ? r[ci.note] : '',
+      call: prev ? prev.call : guessName(name), status: prev ? prev.status : ''
+    };
+  });
+  save(); return state.members.length;
+}
+
+const queue = () => state.members.filter(m => !m.status && (!state.only1 || m.deg === '1촌'));
+
+function message(m) {
+  const g = (state.greet || '').split('{이름}').join(m.call);
+  const b = (state.body || '').split('{이름}').join(m.call);
+  return g + '\n\n' + b;
+}
+
+function render() {
+  $('sender').hidden = $('listCard').hidden = !state.members.length;
+  const targets = state.members.filter(m => !state.only1 || m.deg === '1촌');
+  const done = targets.filter(m => m.status).length;
+  $('bar').style.width = targets.length ? (100 * done / targets.length) + '%' : '0';
+  $('progress').textContent = `${done} / ${targets.length}명 처리 (발송 ${state.members.filter(m => m.status === 'sent').length}, 건너뜀 ${state.members.filter(m => m.status === 'skipped').length})`;
+
+  const q = queue();
+  const cur = $('cur');
+  if (!q.length) { cur.innerHTML = '<p class="who">모두 처리했습니다 🎉</p>'; }
+  else {
+    const m = q[0];
+    cur.innerHTML = `
+      <div class="who">${esc(m.name)} <span class="tag">${esc(m.deg || '촌수 미표시')}</span></div>
+      <div class="mute">${esc(m.intro)}</div>
+      <div class="row"><label>호칭 <input type="text" id="call" value="${esc(m.call)}" style="width:200px"></label></div>
+      <div class="preview" id="prev"></div>
+      <div class="row">
+        <button id="copy" class="primary">① 메시지 복사</button>
+        <button id="open">② 링크드인 메시지 열기</button>
+        <button id="done" class="ok">③ 발송 완료, 다음</button>
+        <button id="skip">건너뛰기</button>
+      </div>
+      <p class="mute">링크드인 메시지에서 이 회원의 대화창을 열고 붙여넣기(Ctrl/⌘+V) 후 전송하세요. 남은 인원: ${q.length}명</p>`;
+    $('prev').textContent = message(m);
+    $('call').oninput = e => { m.call = e.target.value; $('prev').textContent = message(m); save(); renderTable(); };
+    $('copy').onclick = async () => {
+      try { await navigator.clipboard.writeText(message(m)); $('copy').textContent = '복사됨 ✓'; }
+      catch (e) { const t = document.createElement('textarea'); t.value = message(m); document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); $('copy').textContent = '복사됨 ✓'; }
+    };
+    $('open').onclick = () => window.open('https://www.linkedin.com/messaging/', '_blank', 'noopener');
+    $('done').onclick = () => { m.status = 'sent'; save(); render(); };
+    $('skip').onclick = () => { m.status = 'skipped'; save(); render(); };
+  }
+  renderTable();
+}
+
+function renderTable() {
+  $('tbl').innerHTML = '<tr><th>번호</th><th>이름</th><th>촌수</th><th>호칭</th><th>상태</th></tr>' +
+    state.members.map((m, i) => `<tr><td>${esc(m.no)}</td><td>${esc(m.name)}</td><td>${esc(m.deg)}</td>
+      <td><input type="text" data-i="${i}" value="${esc(m.call)}" style="width:140px"></td>
+      <td class="${m.status}">${m.status === 'sent' ? '발송' : m.status === 'skipped' ? '건너뜀' : ''}
+        ${m.status ? `<button data-undo="${i}">되돌리기</button>` : ''}</td></tr>`).join('');
+  $('tbl').querySelectorAll('input[data-i]').forEach(inp => inp.onchange = e => { state.members[+e.target.dataset.i].call = e.target.value; save(); render(); });
+  $('tbl').querySelectorAll('[data-undo]').forEach(b => b.onclick = e => { state.members[+e.target.dataset.undo].status = ''; save(); render(); });
+}
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+$('load').onclick = () => { const n = loadMembers($('paste').value); if (n) { $('loadInfo').textContent = `${n}명 불러옴`; $('paste').value = ''; render(); } };
+$('file').onchange = e => { const f = e.target.files[0]; if (f) f.text().then(t => { const n = loadMembers(t); $('loadInfo').textContent = n ? `${n}명 불러옴` : ''; render(); }); };
+$('greet').oninput = e => { state.greet = e.target.value; save(); render(); };
+$('body').oninput = e => { state.body = e.target.value; save(); render(); };
+$('only1').onchange = e => { state.only1 = e.target.checked; save(); render(); };
+$('reset').onclick = () => { if (confirm('발송 기록을 모두 초기화할까요?')) { state.members.forEach(m => m.status = ''); save(); render(); } };
+$('export').onclick = () => {
+  const lines = ['번호,이름,촌수,호칭,상태'].concat(state.members.map(m => [m.no, m.name, m.deg, m.call, m.status].map(v => '"' + String(v ?? '').replace(/"/g, '""') + '"').join(',')));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' }));
+  a.download = '발송현황.csv'; a.click();
+};
+
+try { const s = JSON.parse(localStorage.getItem(KEY) || 'null'); if (s) state = Object.assign(state, s); } catch (e) {}
+$('greet').value = state.greet || '{이름}님, 안녕하세요.';
+state.greet = $('greet').value; $('body').value = state.body || ''; $('only1').checked = state.only1;
+render();
+</script>
+</body>
+</html>
